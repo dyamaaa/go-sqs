@@ -2,9 +2,11 @@ package server
 
 import (
 	"encoding/json"
+	"fmt"
 	"go-sqs/internal/queue"
 	"log"
 	"net/http"
+	"time"
 )
 
 type Server struct {
@@ -15,27 +17,41 @@ func NewServer(manager *queue.Manager) *Server {
 	return &Server{manager: manager}
 }
 
-func (s *Server) EnqueueHandler(w http.ResponseWriter, r *http.Request) {
-	queueName := r.URL.Query().Get("queueName")
+func (s *Server) getQueue(queueName string, w http.ResponseWriter) (*queue.Queue, bool) {
 	if queueName == "" {
 		http.Error(w, "Queue name is required", http.StatusBadRequest)
+		return nil, false
+	}
+
+	q, err := s.manager.GetOrCreateQueue(queueName)
+	if err != nil {
+		s.handleError(w, fmt.Sprintf("Error getting or creating queue: %v", err), http.StatusInternalServerError)
+		return nil, false
+	}
+
+	return q, true
+}
+
+func (s *Server) handleError(w http.ResponseWriter, message string, statusCode int) {
+	log.Printf(message)
+	http.Error(w, message, statusCode)
+}
+
+func (s *Server) EnqueueHandler(w http.ResponseWriter, r *http.Request) {
+	queueName := r.URL.Query().Get("queueName")
+	q, ok := s.getQueue(queueName, w)
+	if !ok {
 		return
 	}
 
 	var msg queue.Message
 	if err := json.NewDecoder(r.Body).Decode(&msg); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-
-	q, err := s.manager.GetOrCreateQueue(queueName)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		s.handleError(w, fmt.Sprintf("Error decoding message: %v", err), http.StatusBadRequest)
 		return
 	}
 
 	if err := q.Enqueue(msg); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		s.handleError(w, fmt.Sprintf("Error enqueuing message: %v", err), http.StatusInternalServerError)
 		return
 	}
 
@@ -44,20 +60,14 @@ func (s *Server) EnqueueHandler(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) DequeueHandler(w http.ResponseWriter, r *http.Request) {
 	queueName := r.URL.Query().Get("queueName")
-	if queueName == "" {
-		http.Error(w, "Queue name is required", http.StatusBadRequest)
+	q, ok := s.getQueue(queueName, w)
+	if !ok {
 		return
 	}
 
-	q, err := s.manager.GetOrCreateQueue(queueName)
+	msg, err := q.WaitForMessage(30 * time.Second)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	msg, err := q.Dequeue()
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		s.handleError(w, fmt.Sprintf("Error waiting for message: %v", err), http.StatusInternalServerError)
 		return
 	}
 
@@ -67,7 +77,7 @@ func (s *Server) DequeueHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := json.NewEncoder(w).Encode(msg); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		s.handleError(w, fmt.Sprintf("Error encoding message: %v", err), http.StatusInternalServerError)
 		return
 	}
 }

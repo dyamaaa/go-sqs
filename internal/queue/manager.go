@@ -8,7 +8,7 @@ import (
 type Manager struct {
 	queues map[string]*Queue
 	lock   sync.RWMutex
-	dbPath string // データベースファイルのベースパス
+	dbPath string
 }
 
 func NewManager(dbPath string) (*Manager, error) {
@@ -23,10 +23,7 @@ func NewManager(dbPath string) (*Manager, error) {
 }
 
 func (m *Manager) GetOrCreateQueue(name string) (*Queue, error) {
-	m.lock.RLock()
-	queue, exists := m.queues[name]
-	m.lock.RUnlock()
-
+	queue, exists := m.getQueue(name)
 	if exists {
 		return queue, nil
 	}
@@ -34,12 +31,11 @@ func (m *Manager) GetOrCreateQueue(name string) (*Queue, error) {
 	m.lock.Lock()
 	defer m.lock.Unlock()
 
-	// Check again in case another goroutine created the queue while we were waiting for the lock
-	if queue, exists := m.queues[name]; exists {
+	queue, exists = m.getQueue(name)
+	if exists {
 		return queue, nil
 	}
 
-	// キューごとに一意のデータベースパスを生成
 	queuePath := fmt.Sprintf("%s/%s", m.dbPath, name)
 	queue, err := NewQueue(queuePath)
 	if err != nil {
@@ -48,4 +44,12 @@ func (m *Manager) GetOrCreateQueue(name string) (*Queue, error) {
 
 	m.queues[name] = queue
 	return queue, nil
+}
+
+// getQueue is a helper method to get a queue from the map if it exists.
+func (m *Manager) getQueue(name string) (*Queue, bool) {
+	m.lock.RLock()
+	defer m.lock.RUnlock()
+	queue, exists := m.queues[name]
+	return queue, exists
 }
